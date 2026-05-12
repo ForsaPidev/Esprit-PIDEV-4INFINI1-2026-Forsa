@@ -22,8 +22,14 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import jakarta.servlet.http.HttpServletRequest;
+
+import java.net.URI;
 import java.security.SecureRandom;
+import java.util.Locale;
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.Base64;
@@ -36,6 +42,8 @@ import java.util.stream.Collectors;
 
 @Service
 public class WebAuthnService {
+
+    private static final Logger log = LoggerFactory.getLogger(WebAuthnService.class);
 
     private record PendingChallenge(String challenge, long expiresAtEpochMs, Long userId, String username) {
     }
@@ -56,17 +64,81 @@ public class WebAuthnService {
             WebAuthnCredentialRepository credentialRepository,
             JwtUtils jwtUtils,
             IRoleAccessService roleAccessService,
-            @Value("${app.webauthn.rp-id:localhost}") String rpId,
+            @Value("${app.webauthn.rp-id:}") String rpIdOverride,
+            @Value("${app.frontend.base-url:http://localhost:4200}") String frontendBaseUrl,
             @Value("${app.webauthn.rp-name:Forsa}") String rpName) {
         this.userRepository = userRepository;
         this.credentialRepository = credentialRepository;
         this.jwtUtils = jwtUtils;
         this.roleAccessService = roleAccessService;
-        this.rpId = rpId;
+        this.rpId = resolveRpIdFromConfig(rpIdOverride, frontendBaseUrl);
         this.rpName = rpName;
+        log.info("WebAuthn default rpId={} (overridden per request from Origin when the SPA is on another host)", this.rpId);
     }
 
-    public ResponseEntity<?> beginRegister(Authentication authentication, WebAuthnBeginRegisterRequest request) {
+    /**
+     * When the Angular app and API use different hosts (e.g. ngrok front + loca.lt API), {@code rp.id} must still
+     * match the page's hostname. Browsers send {@code Origin} on cross-origin POST; use it for WebAuthn begin.
+     */
+    private String effectiveRpId(HttpServletRequest request) {
+        String fromBrowser = extractRequestHost(request);
+        if (fromBrowser != null && !fromBrowser.isBlank()) {
+            String normalized = fromBrowser.trim().toLowerCase(Locale.ROOT);
+            log.info("WebAuthn begin: rpId={} (from Origin/Referer)", normalized);
+            return normalized;
+        }
+        log.debug("WebAuthn begin: rpId={} (configured default, no Origin/Referer host)", this.rpId);
+        return this.rpId;
+    }
+
+    private static String extractRequestHost(HttpServletRequest request) {
+        if (request == null) {
+            return null;
+        }
+        String origin = request.getHeader("Origin");
+        if (origin != null && !origin.isBlank()) {
+            return hostOfUriString(origin.trim());
+        }
+        String referer = request.getHeader("Referer");
+        if (referer != null && !referer.isBlank()) {
+            return hostOfUriString(referer.trim());
+        }
+        return null;
+    }
+
+    private static String hostOfUriString(String uriString) {
+        try {
+            URI uri = URI.create(uriString);
+            String host = uri.getHost();
+            return host != null && !host.isEmpty() ? host : null;
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    private static String resolveRpIdFromConfig(String rpIdOverride, String frontendBaseUrl) {
+        if (rpIdOverride != null && !rpIdOverride.isBlank()) {
+            return rpIdOverride.trim();
+        }
+        if (frontendBaseUrl == null || frontendBaseUrl.isBlank()) {
+            return "localhost";
+        }
+        try {
+            URI uri = URI.create(frontendBaseUrl.trim());
+            String host = uri.getHost();
+            if (host != null && !host.isEmpty()) {
+                return host;
+            }
+        } catch (IllegalArgumentException ignored) {
+            // fall through
+        }
+        return "localhost";
+    }
+
+    public ResponseEntity<?> beginRegister(
+            Authentication authentication,
+            WebAuthnBeginRegisterRequest request,
+            HttpServletRequest httpRequest) {
         if (!(authentication != null && authentication.getPrincipal() instanceof UserDetailsImpl principal)) {
             return ResponseEntity.status(401).body(Map.of("message", "Unauthorized"));
         }
@@ -82,9 +154,10 @@ public class WebAuthnService {
                 .map(WebAuthnCredential::getCredentialId)
                 .toList();
 
+        String sessionRpId = effectiveRpId(httpRequest);
         return ResponseEntity.ok(new WebAuthnBeginRegisterResponse(
                 challenge,
-                rpId,
+                sessionRpId,
                 rpName,
                 toBase64Url(String.valueOf(principal.getId())),
                 principal.getUsername(),
@@ -131,7 +204,7 @@ public class WebAuthnService {
         return ResponseEntity.ok(Map.of("message", "Passkey registered successfully"));
     }
 
-    public ResponseEntity<?> beginLogin(WebAuthnBeginLoginRequest request) {
+    public ResponseEntity<?> beginLogin(WebAuthnBeginLoginRequest request, HttpServletRequest httpRequest) {
         String username = request != null ? nullSafeTrim(request.getUsername()) : "";
         if (username.isEmpty()) {
             return ResponseEntity.badRequest().body(Map.of("message", "Username is required"));
@@ -152,9 +225,10 @@ public class WebAuthnService {
         }
         String challenge = randomB64Url(32);
         loginChallenges.put(username, new PendingChallenge(challenge, System.currentTimeMillis() + 120_000L, user.getId(), username));
+        String sessionRpId = effectiveRpId(httpRequest);
         return ResponseEntity.ok(new WebAuthnBeginLoginResponse(
                 challenge,
-                rpId,
+                sessionRpId,
                 allowCredentials,
                 60_000L,
                 "preferred"));

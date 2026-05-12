@@ -41,7 +41,7 @@ public class AuthController {
   }
   @GetMapping("/google-login-url")
   public ResponseEntity<?> getGoogleLoginUrl(HttpServletRequest request) {
-    String baseUrl = "http://localhost:8089/forsaPidev";
+    String baseUrl = "https://forsa-backend.loca.lt/forsaPidev";
     String googleAuthUrl = baseUrl + "/oauth2/authorization/google";
     return ResponseEntity.ok(new MessageResponse(googleAuthUrl));
   }
@@ -73,8 +73,9 @@ public class AuthController {
   @PostMapping("/webauthn/register/begin")
   public ResponseEntity<?> beginPasskeyRegister(
           Authentication authentication,
-          @RequestBody(required = false) WebAuthnBeginRegisterRequest request) {
-    return webAuthnService.beginRegister(authentication, request);
+          @RequestBody(required = false) WebAuthnBeginRegisterRequest request,
+          HttpServletRequest httpRequest) {
+    return webAuthnService.beginRegister(authentication, request, httpRequest);
   }
 
   @PostMapping("/webauthn/register/finish")
@@ -85,8 +86,10 @@ public class AuthController {
   }
 
   @PostMapping("/webauthn/login/begin")
-  public ResponseEntity<?> beginPasskeyLogin(@RequestBody WebAuthnBeginLoginRequest request) {
-    return webAuthnService.beginLogin(request);
+  public ResponseEntity<?> beginPasskeyLogin(
+          @RequestBody WebAuthnBeginLoginRequest request,
+          HttpServletRequest httpRequest) {
+    return webAuthnService.beginLogin(request, httpRequest);
   }
 
   @PostMapping("/webauthn/login/finish")

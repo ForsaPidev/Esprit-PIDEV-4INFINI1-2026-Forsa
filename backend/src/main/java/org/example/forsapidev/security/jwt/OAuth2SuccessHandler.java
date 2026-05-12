@@ -65,6 +65,6 @@ public class OAuth2SuccessHandler implements AuthenticationSuccessHandler {
         }
 
         String jwt = jwtUtils.generateJwtForUserId(user.getId());
-        response.sendRedirect("http://localhost:4200/oauth-success?token=" + jwt);
+        response.sendRedirect("https://bigotedly-youthful-dino.ngrok-free.dev/oauth-success?token=" + jwt);
     }
 }
